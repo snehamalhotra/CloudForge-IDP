@@ -1,0 +1,488 @@
+# AWS/EKS-specific overrides — merged on top of app-config.yaml in production.
+# bootstrap.sh patches BACKSTAGE_ALB_URL with the real ALB hostname after provisioning.
+
+app:
+  baseUrl: http://BACKSTAGE_ALB_URL
+  # Backstage does NOT deep-merge arrays — this list replaces the one in
+  # app-config.yaml wholesale (aws/backstage/deployment.yaml loads both with
+  # two --config flags), so every entry that file declares has to be repeated
+  # here. Omitting the AI entries un-gated all four AI pages on EKS even when
+  # bootstrap-ai.sh --aws had never been run. Same requirement as the local
+  # overlay in scripts/lib.sh (write_backstage_ai_overlay).
+  extensions:
+    # The standalone Kubernetes route renders the entity Kubernetes tab outside
+    # any entity context and dies with "Entity context is not available".
+    - page:kubernetes:
+        disabled: true
+    # AI feature flags — default OFF, flipped on by bootstrap-ai.sh --aws once
+    # the AI layer actually exists. Kept in step with aiStack.enabled below.
+    - page:custom-pages/ai-assistant:
+        disabled: true
+    - nav-item:custom-pages/ai-assistant:
+        disabled: true
+    - page:custom-pages/ai-search:
+        disabled: true
+    - nav-item:custom-pages/ai-search:
+        disabled: true
+    - page:custom-pages/approvals:
+        disabled: true
+    - nav-item:custom-pages/approvals:
+        disabled: true
+    - page:custom-pages/kagent-platform:
+        disabled: true
+    - nav-item:custom-pages/kagent-platform:
+        disabled: true
+    - page:custom-pages/mlflow-platform:
+        disabled: true
+    - nav-item:custom-pages/mlflow-platform:
+        disabled: true
+    - page:custom-pages/langfuse-platform:
+        disabled: true
+    - nav-item:custom-pages/langfuse-platform:
+        disabled: true
+    # The per-entity Langfuse tab was never in this list, so it rendered on every
+    # component even with the AI stack switched off. Its filter now also matches
+    # AI/ML spec.types without the annotation, which makes disabling it here the
+    # only thing keeping it off a non-AI cluster.
+    - entity-content:custom-pages/langfuse:
+        disabled: true
+
+# Drives the hardcoded AI links on the custom Home / Support / Learning-Center
+# pages, which app.extensions cannot reach. bootstrap-ai.sh --aws flips this
+# together with the extension flags above.
+aiStack:
+  enabled: false
+
+backend:
+  baseUrl: http://BACKSTAGE_ALB_URL
+  listen: ':7007'
+  cors:
+    origin: http://BACKSTAGE_ALB_URL
+  auth:
+    externalAccess:
+      - type: static
+        options:
+          token: ${BACKSTAGE_CATALOG_TOKEN}
+          subject: catalog-exporter
+  database:
+    connection:
+      ssl:
+        # RDS certs are signed by Amazon's own CA, not a public trust root. bootstrap.sh
+        # downloads https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem and
+        # mounts it into the rds-ca-bundle ConfigMap at the path below (see deployment.yaml).
+        rejectUnauthorized: true
+        # $file, not a bare path. node-postgres expects `ca` to be the certificate
+        # CONTENTS; given a plain string it treats "/config/rds-ca-bundle.pem" as the
+        # PEM itself, fails to parse it, falls back to the system trust store and
+        # rejects Amazon's CA. Backstage then crashlooped on
+        #   Failed to connect to the database ... self-signed certificate in certificate chain
+        # with the readiness probe returning 404 because the backend never finished
+        # starting. The file was mounted correctly the whole time (165 KB, valid PEM) —
+        # only the config was wrong. $file inlines it at load time. Observed 2026-08-12.
+        ca:
+          $file: /config/rds-ca-bundle.pem
+
+auth:
+  environment: production
+  session:
+    secret: ${AUTH_SESSION_SECRET}
+  providers:
+    # No `guest:` provider here, deliberately.
+    #
+    # There used to be one, carrying a comment that said "DEMO ONLY — not
+    # committed". It was committed, so every adopter who bootstrapped on AWS got
+    # anonymous read access to their whole catalog over plain HTTP while the
+    # comment told any reviewer it was a local-only edit.
+    #
+    # idpPermissionPolicy.ts only denies guests three permissions
+    # (scaffolder.task.create, scaffolder.task.cancel, catalog.entity.delete), so
+    # an unauthenticated visitor could read every entity, owner, annotation and
+    # link in the catalog.
+    #
+    # Local keeps guest — see app-config.local.yaml, where it is force-enabled
+    # because NODE_ENV is not `development` inside the container. That is a
+    # laptop, not an internet-facing ALB.
+    #
+    # If you need it temporarily on AWS, add it to a local uncommitted overlay
+    # rather than here.
+    github:
+      production:
+        clientId: ${AUTH_GITHUB_CLIENT_ID}
+        clientSecret: ${AUTH_GITHUB_CLIENT_SECRET}
+        # Without this, Backstage mints no session of its own and delegates token
+        # refresh to GitHub. GitHub OAuth Apps do not issue refresh tokens unless
+        # "Expiration of user authorization tokens" is enabled, so
+        # GET /api/auth/github/refresh returned 401 on every call. The frontend
+        # reads that as signed-out and re-opens the sign-in popup — which surfaced
+        # as being logged out the moment you opened Catalog or Announcements, the
+        # first routes that fetch with a token. Requires auth.session.secret, set
+        # above from ${AUTH_SESSION_SECRET}. Observed 2026-08-17.
+        sessionDuration: { days: 7 }
+        signIn:
+          resolvers:
+            - resolver: usernameMatchingUserEntityName
+              dangerouslyAllowSignInWithoutUserInCatalog: true
+            - resolver: emailMatchingUserEntityProfileEmail
+              dangerouslyAllowSignInWithoutUserInCatalog: true
+
+proxy:
+  endpoints:
+    /opencost:
+      target: http://opencost.opencost.svc.cluster.local:9003
+      changeOrigin: true
+      pathRewrite:
+        '^/api/proxy/opencost': ''
+    /grafana/api:
+      target: http://prometheus-grafana.monitoring.svc.cluster.local:80
+      changeOrigin: true
+      headers:
+        Authorization: Bearer ${GRAFANA_TOKEN}
+    /prometheus:
+      target: http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+      changeOrigin: true
+      pathRewrite:
+        '^/api/proxy/prometheus': ''
+    /argocd:
+      target: http://argocd-server.argocd.svc.cluster.local:80
+      changeOrigin: true
+      headers:
+        Authorization: Bearer ${ARGOCD_AUTH_TOKEN}
+    /kagent:
+      target: http://kagent-ui.kagent.svc.cluster.local:8080
+      changeOrigin: true
+      pathRewrite:
+        '^/api/proxy/kagent': ''
+    # MLflow REST API behind the MLflow page. In-cluster Service DNS, not the
+    # ALB: the ALB hostname is only known after bootstrap-ai.sh runs, and this
+    # config is rendered into a ConfigMap before that. POST is required —
+    # experiments/search and runs/search are both POST in the MLflow 2.x API.
+    /mlflow:
+      target: http://mlflow.ml-platform.svc.cluster.local:5000
+      allowedMethods: ['GET', 'POST']
+      changeOrigin: true
+      pathRewrite:
+        '^/api/proxy/mlflow': ''
+    # Langfuse public API behind the AI Observability page. In-cluster Service
+    # DNS rather than the ALB: the ALB hostname is only known after
+    # bootstrap-ai.sh runs, and this config is rendered into a ConfigMap before
+    # that. LANGFUSE_BASIC_AUTH is set on the Backstage deployment by
+    # bootstrap-ai.sh from the langfuse-init Secret.
+    /langfuse:
+      target: http://langfuse-web.ml-platform.svc.cluster.local:3000
+      allowedMethods: ['GET']
+      changeOrigin: true
+      headers:
+        Authorization: Basic ${LANGFUSE_BASIC_AUTH:-bm90LWNvbmZpZ3VyZWQ=}
+      pathRewrite:
+        '^/api/proxy/langfuse': ''
+    # Contract testing (docs/contract-testing.md). bootstrap-ai.sh --aws deploys
+    # contract-mcp-server — ECR repo, DynamoDB IRSA role and ALB included — but
+    # this proxy entry was only ever added to app-config.local.yaml, so on EKS
+    # the server ran with nothing able to reach it through Backstage.
+    /contract-mcp:
+      target: http://contract-mcp-server.services-dev.svc.cluster.local:3003
+      allowedMethods: ['GET', 'POST']
+      changeOrigin: true
+    # ADP Phase 4 HiTL approval gate (docs/agentic-platform.md) — only reachable
+    # once bootstrap-ai.sh --adp has deployed approval-service.
+    /approval-service:
+      target: http://approval-service.services-dev.svc.cluster.local:3009
+      changeOrigin: true
+      pathRewrite:
+        '^/api/proxy/approval-service': ''
+    # External SaaS — same endpoints in local and AWS. Tokens are loaded via
+    # External Secrets from AWS Secrets Manager (see aws/external-secrets/backstage.yaml).
+    /sonarcloud:
+      target: https://sonarcloud.io
+      allowedMethods: ['GET']
+      changeOrigin: true
+      headers:
+        Authorization: Bearer ${SONAR_TOKEN}
+    /snyk:
+      target: https://api.snyk.io
+      allowedMethods: ['GET']
+      changeOrigin: true
+      headers:
+        Authorization: token ${SNYK_TOKEN}
+    # LambdaTest — device farm (mobile-api) and browser grid (api) are separate
+    # hosts, so they need separate endpoints rather than one with a pathRewrite.
+    # The default is a deliberately invalid credential: unset, LambdaTest replies
+    # 401 and the entity tab falls back to demo data, matching /langfuse above.
+    /lambdatest:
+      target: https://api.lambdatest.com
+      allowedMethods: ['GET']
+      changeOrigin: true
+      headers:
+        Authorization: Basic ${LT_BASIC_AUTH:-bm90LWNvbmZpZ3VyZWQ=}
+    /lambdatest-mobile:
+      target: https://mobile-api.lambdatest.com
+      allowedMethods: ['GET']
+      changeOrigin: true
+      headers:
+        Authorization: Basic ${LT_BASIC_AUTH:-bm90LWNvbmZpZ3VyZWQ=}
+    /datadog:
+      target: https://api.datadoghq.eu
+      allowedMethods: ['GET']
+      changeOrigin: true
+      headers:
+        DD-API-KEY: ${DD_API_KEY}
+        DD-APPLICATION-KEY: ${DD_APP_KEY}
+    # Incident records are GitHub issues (see services/agent-event-router). A
+    # separate endpoint from /github-code-scanning even though both target
+    # api.github.com: reusing that one under a misleading name would make the
+    # allowedMethods and header set for two unrelated features impossible to
+    # reason about separately.
+    /github-issues:
+      target: https://api.github.com
+      allowedMethods: ['GET']
+      changeOrigin: true
+      headers:
+        Authorization: Bearer ${GITHUB_TOKEN}
+        Accept: application/vnd.github+json
+    /github-code-scanning:
+      target: https://api.github.com
+      allowedMethods: ['GET']
+      changeOrigin: true
+      headers:
+        Authorization: Bearer ${GITHUB_TOKEN}
+        Accept: application/vnd.github+json
+    /pagerduty:
+      target: https://api.pagerduty.com
+      allowedMethods: ['GET', 'POST']
+      changeOrigin: true
+      headers:
+        Authorization: Token token=${PAGERDUTY_TOKEN}
+        Accept: application/vnd.pagerduty+json;version=2
+    /jira:
+      # Default is an RFC 2606 .invalid host on purpose: when JIRA_URL is unset the
+      # proxy must not resolve. A real-looking placeholder domain would send portal
+      # requests to a third party nobody here controls.
+      target: ${JIRA_URL:-https://jira.invalid}
+      allowedMethods: ['GET']
+      changeOrigin: true
+      headers:
+        Authorization: Basic ${JIRA_TOKEN}
+        Accept: application/json
+    /github-copilot:
+      target: https://api.github.com
+      allowedMethods: ['GET']
+      changeOrigin: true
+      headers:
+        Authorization: Bearer ${GITHUB_TOKEN}
+        Accept: application/vnd.github+json
+        X-GitHub-Api-Version: "2022-11-28"
+
+# Browser-facing "open in new tab" links for the custom ArgoCD/Grafana/KAgent
+# pages — distinct from the in-cluster `proxy:` targets above. ALB hostnames
+# aren't known until each Ingress is provisioned, so these start as placeholders
+# and get sed-substituted with the real ALB DNS names by scripts/bootstrap.sh
+# (ArgoCD + Grafana, once their Ingresses are up) and scripts/bootstrap-ai.sh
+# --aws (KAgent, once its Ingress is up) — same pattern as BACKSTAGE_ALB_URL
+# below. Until substituted, the links 404 rather than silently pointing at the
+# wrong place.
+externalLinks:
+  # owner/repo where agent-event-router files incident issues. The Incidents
+  # page and entity tab read from here; it must match INCIDENT_REPO on the
+  # router, or the UI shows an empty list while incidents are being filed.
+  incidentRepo: moatazeldebsy/backstage-platform-template
+  argocd: http://ARGOCD_ALB_URL
+  grafana: http://GRAFANA_ALB_URL
+  kagent: http://KAGENT_ALB_URL
+  mlflow: http://MLFLOW_ALB_URL
+  # Substituted by scripts/bootstrap-ai.sh once the Langfuse ALB has a hostname.
+  langfuse: http://LANGFUSE_ALB_URL
+
+# GitHub App integration — replaces the personal access token used in app-config.yaml.
+# Higher rate limits (5 000 req/hr per installation vs 5 000/hr per PAT globally),
+# no rotation needed, works on personal accounts and orgs.
+#
+# Setup (one-time):
+#   1. Create the App: github.com/settings/apps/new (personal) or
+#      github.com/organizations/<org>/settings/apps/new (org).
+#      Required permissions: Contents=Read, Pull requests=Write, Members=Read, Metadata=Read.
+#   2. Generate a private key and note the App ID.
+#   3. Install the App on the platform repo (and any team repos you want Backstage to access).
+#   4. Store secrets in AWS Secrets Manager under idp-mvp/:
+#        idp-mvp/GITHUB_APP_ID           → numeric App ID
+#        idp-mvp/GITHUB_APP_CLIENT_ID    → OAuth client ID
+#        idp-mvp/GITHUB_APP_CLIENT_SECRET→ OAuth client secret
+#        idp-mvp/GITHUB_APP_PRIVATE_KEY  → full PEM content (newlines preserved)
+#        idp-mvp/GITHUB_APP_WEBHOOK_SECRET → webhook secret (can be empty)
+#   5. Remove the legacy GITHUB_TOKEN secret once confirmed working.
+integrations:
+  github:
+    - host: github.com
+      # Token, not a GitHub App. This array REPLACES the base app-config.yaml one
+      # wholesale (Backstage merges objects but never concatenates arrays — the same
+      # trap called out for catalog.locations below), so whatever is written here is
+      # the only GitHub integration the backend gets.
+      #
+      # It previously declared an `apps:` block reading GITHUB_APP_ID and friends.
+      # bootstrap.sh only writes those to Secrets Manager when they are exported, and
+      # they usually are not — so every value resolved to undefined and the backend
+      # failed with
+      #   Missing required config value at 'integrations.github[0].apps[0].appId'
+      # which prevented core.urlReader from being instantiated and took down
+      # CATALOG, SCAFFOLDER and TECHDOCS at startup. The portal still served HTTP 200
+      # and /healthz stayed green — those report overall backend health, not
+      # per-plugin readiness — so the only visible symptom was an empty catalog:
+      # no components, no templates, no tech radar. /api/catalog/locations returned
+      # 503 "Service has not started up yet" indefinitely. Observed 2026-08-12.
+      #
+      # GITHUB_TOKEN is populated by bootstrap.sh Phase 3.7 and is what the base
+      # config already used. To use a GitHub App instead, add the `apps:` block back
+      # AND make sure all five GITHUB_APP_* values reach Secrets Manager first.
+      token: ${GITHUB_TOKEN}
+
+techRadar:
+  url: https://raw.githubusercontent.com/moatazeldebsy/backstage-platform-template/main/backstage/catalog/tech-radar.json
+
+techdocs:
+  publisher:
+    type: 'awsS3'
+    awsS3:
+      bucketName: ${TECHDOCS_S3_BUCKET_NAME}
+      region: ${AWS_REGION}
+
+catalog:
+  import:
+    entityFilename: catalog-info.yaml
+    pullRequestBranchName: backstage-integration
+  rules:
+    - allow: [Component, System, API, Resource, Location, Template, User, Group, Domain]
+  locations:
+    # ── Templates (all tiers) ──────────────────────────────────────────────────
+    # Single entry — all templates indexed in backstage/catalog/all-templates.yaml.
+    # To add a template: add one line there; no app-config edit needed.
+    - type: url
+      target: https://github.com/moatazeldebsy/backstage-platform-template/blob/main/backstage/catalog/all-templates.yaml
+      rules:
+        - allow: [Template, Location]
+    # Platform entities — Groups, Users, Systems, Domains, APIs, Components and
+    # Resources — registered via ONE url location, exactly like all-templates.yaml
+    # above.
+    #
+    # These were previously seventeen `type: file` entries pointing at /catalog/...
+    # and /services/... Those paths exist only locally, where
+    # local/backstage/docker-compose.yml bind-mounts `../../backstage/catalog:/catalog`.
+    # The EKS image has no /catalog directory and nothing mounts one, so every one
+    # of them silently resolved to nothing: the catalog came up with Templates only
+    # and ZERO Group/User entities, leaving the Platform Dashboard's "Teams in
+    # catalog" tile empty. Nothing errored — a file location matching no files is
+    # not a failure. Observed 2026-08-13.
+    #
+    # backstage/catalog/all-entities.yaml is a kind: Location whose targets are
+    # relative to itself, so the same index resolves from any checkout path.
+    #
+    # NOTE the array-replacement rule still applies: this list replaces
+    # app-config.yaml's wholesale, so anything that must exist on AWS has to be
+    # reachable from all-templates.yaml or all-entities.yaml.
+    - type: url
+      target: https://github.com/moatazeldebsy/backstage-platform-template/blob/main/backstage/catalog/all-entities.yaml
+      rules:
+        - allow: [Component, System, API, Resource, Location, User, Group, Domain]
+
+  # Keep the topic list in sync with app-config.yaml — scaffolder templates tag
+  # new repos `idp-app`, so both topics must be included or the catalog (and
+  # therefore the DORA exporter, which only reports catalogued repos) misses them.
+  providers:
+    github:
+      idpOrg:
+        organization: moatazeldebsy
+        catalogPath: /catalog-info.yaml
+        filters:
+          branch: main
+          topic:
+            include: [idp, idp-app]
+        schedule:
+          frequency: { minutes: 15 }
+          timeout: { minutes: 3 }
+
+    # GitHub org sync — automatically imports User and Group entities from the GitHub
+    # organisation so teams don't need to maintain User/Group YAML manually.
+    # Members, team memberships, and avatars stay in sync with GitHub at the schedule below.
+    githubOrg:
+      idpOrgSync:
+        id: idpOrgSync
+        githubUrl: https://github.com
+        orgs:
+          - name: moatazeldebsy
+        schedule:
+          frequency: { minutes: 30 }
+          timeout: { minutes: 5 }
+
+# Backstage permission framework.
+# Requires @backstage/plugin-permission-backend and a policy plugin in packages/backend.
+# In production this enforces read-only access for guests and restricts scaffolder
+# template execution to authenticated GitHub org members.
+#
+# To enable: install the permission backend plugin, then set enabled: true here.
+# See: https://backstage.io/docs/permissions/getting-started
+# ── Multi-cluster Kubernetes plugin (V2) ─────────────────────────────────────
+# Shows pods, deployments, and services from both EKS clusters on entity pages.
+# The `backstage.io/kubernetes-id` annotation on the entity matches against
+# the label selector on Kubernetes objects (set by the Helm chart).
+#
+# Auth: uses service account tokens stored in Secrets Manager (populated by
+# register-argocd-cluster.sh which creates argocd-manager — reuse that SA or
+# create a dedicated backstage-k8s-reader SA with read-only ClusterRole).
+kubernetes:
+  serviceLocatorMethod:
+    type: multiTenant    # show resources from all clusters the entity label matches
+  clusterLocatorMethods:
+    - type: config
+      clusters:
+        # caData comes from terraform/secrets.tf (K8S_CLUSTER_CA_DATA, sourced from
+        # module.eks.cluster_certificate_authority_data) — verifies the EKS API server
+        # cert instead of skipping TLS validation.
+        - name: eks-us-east-1
+          url: ${K8S_CLUSTER_URL}
+          authProvider: serviceAccount
+          serviceAccountToken: ${K8S_SERVICE_ACCOUNT_TOKEN}
+          skipTLSVerify: false
+          caData: ${K8S_CLUSTER_CA_DATA}
+          customResources:
+            - group: argoproj.io
+              apiVersion: v1alpha1
+              plural: rollouts
+            - group: idp.platform
+              apiVersion: v1alpha1
+              plural: s3buckets
+            - group: idp.platform
+              apiVersion: v1alpha1
+              plural: dynamotables
+            # v1alpha2 is the storage version (kubernetes/kagent/*.yaml). v1alpha1
+            # is still served but down-converts the spec to `description` alone,
+            # so the Kubernetes tab would list agents with everything blanked out.
+            - group: kagent.dev
+              apiVersion: v1alpha2
+              plural: agents
+
+permission:
+  enabled: true
+  # Policy: allow all for authenticated users; deny for unauthenticated (guest).
+  # Replace with a custom OPA/Cedar policy plugin for fine-grained team RBAC.
+  # The minimal policy below blocks the scaffolder for unauthenticated users,
+  # which is the highest-risk default at org scale.
+  #
+  # To add team-scoped template visibility (item 7 from the scaling checklist),
+  # implement a custom PolicyDecision that checks the user's Backstage Group
+  # membership against the template's spec.owner before allowing execution.
+  #
+  # Ref: packages/backend/src/plugins/permission.ts (add this file)
+  #   import { createRouter } from '@backstage/plugin-permission-backend';
+  #   import { AuthorizeResult } from '@backstage/plugin-permission-common';
+  #   export default async function createPlugin(env) {
+  #     return createRouter({
+  #       config: env.config,
+  #       logger: env.logger,
+  #       discovery: env.discovery,
+  #       identity: env.identity,
+  #       policy: {
+  #         async handle(request, user) {
+  #           if (!user) return { result: AuthorizeResult.DENY };
+  #           return { result: AuthorizeResult.ALLOW };
+  #         }
+  #       }
+  #     });
+  #   }
