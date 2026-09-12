@@ -1,4 +1,4 @@
-# Kubernetes-DevSecOps-CI-CD-Project
+# CloudForge-IDP - Kubernetes-DevSecOps-CI-CD-Project
 
 - [Step 1: SSH Exchange between local computer and Github account.](#step-1-ssh-exchange-between-local-computer-and-github-account)
 - [Step 2: CREATE AWS Resources.](#step-2-create-aws-resources)
