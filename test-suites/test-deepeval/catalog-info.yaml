@@ -1,0 +1,13 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: test-deepeval
+  description: DeepEval LLM evaluation suite for the IDP assistant (Claude/Anthropic)
+  annotations:
+    github.com/project-slug: moatazeldebsy/backstage-platform-template
+    backstage.io/techdocs-ref: dir:.
+spec:
+  type: test-suite
+  lifecycle: production
+  owner: platform-team
+  system: internal-developer-platform
