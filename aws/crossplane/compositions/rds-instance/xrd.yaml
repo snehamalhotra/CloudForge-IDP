@@ -1,0 +1,105 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xrdsinstances.idp.platform
+spec:
+  group: idp.platform
+  names:
+    kind: XRDSInstance
+    plural: xrdsinstances
+  claimNames:
+    kind: RDSInstance
+    plural: rdsinstances
+  defaultCompositionRef:
+    name: xrdsinstance.aws
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [parameters, writeConnectionSecretToRef]
+              properties:
+                writeConnectionSecretToRef:
+                  type: object
+                  description: K8s Secret to write connection details (host, port, username, password) into.
+                  required: [name]
+                  properties:
+                    name:
+                      type: string
+                parameters:
+                  type: object
+                  required: [instanceName, dbName, owner]
+                  properties:
+                    instanceName:
+                      type: string
+                      description: DB instance identifier (lowercase, alphanum + hyphen).
+                      pattern: ^[a-z][a-z0-9-]{0,62}$
+                    dbName:
+                      type: string
+                      description: Initial database name.
+                    owner:
+                      type: string
+                      description: Owning team or service.
+                    region:
+                      type: string
+                      default: eu-west-1
+                    instanceClass:
+                      type: string
+                      default: db.t4g.micro
+                    engineVersion:
+                      type: string
+                      default: "16.4"
+                    allocatedStorage:
+                      type: integer
+                      default: 20
+                    multiAz:
+                      type: boolean
+                      default: false
+                    backupRetentionDays:
+                      type: integer
+                      description: Number of days to retain automated RDS backups (1–35).
+                      default: 30
+                      minimum: 1
+                      maximum: 35
+                    costCenter:
+                      type: string
+                      default: engineering
+                    team:
+                      type: string
+                      description: Team name for cost attribution (auto-injected by Kyverno in team-* namespaces).
+                      default: ""
+                    globalDatabase:
+                      type: boolean
+                      description: Promote this instance to an Aurora Global Database with a read replica in replicaRegion. Requires Aurora engine (aurora-postgresql). Replaces the standalone RDS instance with an Aurora cluster.
+                      default: false
+                    replicaRegion:
+                      type: string
+                      description: Standby region for the Aurora Global Database read replica. Only used when globalDatabase is true.
+                      default: us-east-1
+                    globalWriteForwarding:
+                      type: boolean
+                      description: Enable Aurora Global write forwarding — writes to the replica cluster are forwarded to the primary writer. Requires Aurora PostgreSQL 16+.
+                      default: false
+            status:
+              type: object
+              properties:
+                endpoint:
+                  type: string
+                replicaEndpoint:
+                  type: string
+                  description: Reader endpoint of the Aurora Global replica cluster (set when globalDatabase is true).
+      additionalPrinterColumns:
+        - name: INSTANCE
+          type: string
+          jsonPath: .spec.parameters.instanceName
+        - name: ENGINE
+          type: string
+          jsonPath: .spec.parameters.engineVersion
+        - name: READY
+          type: string
+          jsonPath: .status.conditions[?(@.type=='Ready')].status

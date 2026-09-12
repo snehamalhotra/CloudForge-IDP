@@ -1,0 +1,311 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backstage
+  namespace: backstage
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backstage
+  template:
+    metadata:
+      labels:
+        app: backstage
+    spec:
+      serviceAccountName: backstage
+      containers:
+        - name: backstage
+          image: AWS_ACCOUNT_ID.dkr.ecr.AWS_REGION.amazonaws.com/backstage:BACKSTAGE_IMAGE_TAG
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 7007
+          command: ["node", "packages/backend", "--config", "/config/app-config.yaml", "--config", "/config/app-config.aws.yaml"]
+          env:
+            - name: POSTGRES_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: POSTGRES_HOST
+            - name: POSTGRES_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: POSTGRES_PORT
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: POSTGRES_PASSWORD
+            - name: BACKSTAGE_AUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: BACKSTAGE_AUTH_SECRET
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: GITHUB_TOKEN
+            - name: SONAR_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: SONAR_TOKEN
+                  optional: true
+            - name: SNYK_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: SNYK_TOKEN
+                  optional: true
+            - name: GCP_SERVICE_ACCOUNT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: GCP_SERVICE_ACCOUNT_KEY
+                  optional: true
+            - name: LT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: LT_USERNAME
+                  optional: true
+            - name: LT_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: LT_ACCESS_KEY
+                  optional: true
+            - name: LT_BASIC_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: LT_BASIC_AUTH
+                  optional: true
+            - name: BROWSERSTACK_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: BROWSERSTACK_USERNAME
+                  optional: true
+            - name: BROWSERSTACK_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: BROWSERSTACK_ACCESS_KEY
+                  optional: true
+            - name: SAUCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: SAUCE_USERNAME
+                  optional: true
+            - name: SAUCE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: SAUCE_ACCESS_KEY
+                  optional: true
+            - name: K8S_CLUSTER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: K8S_CLUSTER_URL
+            - name: K8S_CLUSTER_CA_DATA
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: K8S_CLUSTER_CA_DATA
+            - name: K8S_SERVICE_ACCOUNT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: K8S_SERVICE_ACCOUNT_TOKEN
+            - name: TECHDOCS_S3_BUCKET_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: TECHDOCS_S3_BUCKET_NAME
+            - name: AWS_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: AWS_REGION
+            - name: AUTH_GITHUB_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: AUTH_GITHUB_CLIENT_ID
+            - name: AUTH_GITHUB_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: AUTH_GITHUB_CLIENT_SECRET
+            - name: BACKSTAGE_CATALOG_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: BACKSTAGE_CATALOG_TOKEN
+            - name: ARGOCD_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: ARGOCD_AUTH_TOKEN
+                  optional: true
+            - name: GRAFANA_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: GRAFANA_TOKEN
+                  optional: true
+            - name: VOYAGE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: VOYAGE_API_KEY
+                  # Not provisioned by terraform/secrets.tf — Voyage AI embeddings are an
+                  # optional feature (semantic search), not required for Backstage to start.
+                  optional: true
+            - name: AUTH_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: AUTH_SESSION_SECRET
+            - name: MLFLOW_EXTERNAL_URL
+              value: "http://MLFLOW_ALB_URL"
+            - name: APP_BASE_URL
+              value: "http://BACKSTAGE_ALB_URL"
+            - name: KAGENT_EXTERNAL_URL
+              value: "http://KAGENT_ALB_URL"
+            - name: CONTRACT_MCP_EXTERNAL_URL
+              value: "http://contract-mcp-server.services-dev.svc.cluster.local:3003"
+            - name: PGSSLMODE
+              value: require
+            - name: NODE_ENV
+              value: production
+            - name: NODE_OPTIONS
+              # --no-node-snapshot is REQUIRED by the scaffolder backend on Node 20+.
+              # It is baked into the image (backstage/Dockerfile), but setting NODE_OPTIONS
+              # here replaces that value wholesale rather than appending — so dd-trace must
+              # carry it forward or every scaffolder task fails before its first step.
+              value: "--no-node-snapshot --require dd-trace/init"
+            - name: DD_AGENT_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: DD_TRACE_AGENT_PORT
+              value: "8126"
+            - name: DD_SITE
+              value: datadoghq.eu
+            - name: DD_ENV
+              value: production
+            - name: DD_SERVICE
+              value: backstage
+            - name: DD_VERSION
+              value: "BACKSTAGE_IMAGE_TAG"
+            - name: DD_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: DD_API_KEY
+                  optional: true
+            - name: DD_APP_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: DD_APP_KEY
+                  optional: true
+            # PagerDuty / Jira for the /pagerduty and /jira proxies in
+            # app-config.aws.yaml (issue #407). optional:true on purpose —
+            # absent or empty, the tabs render their empty state instead of the
+            # pod failing to start, matching the local behaviour.
+            - name: PAGERDUTY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: PAGERDUTY_TOKEN
+                  optional: true
+            - name: JIRA_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: JIRA_TOKEN
+                  optional: true
+            - name: JIRA_URL
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-secrets
+                  key: JIRA_URL
+                  optional: true
+          volumeMounts:
+            - name: base-config
+              mountPath: /config/app-config.yaml
+              subPath: app-config.yaml
+            - name: prod-config
+              mountPath: /config/app-config.aws.yaml
+              subPath: app-config.aws.yaml
+            - name: rds-ca-bundle
+              mountPath: /config/rds-ca-bundle.pem
+              subPath: global-bundle.pem
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          # timeoutSeconds is set explicitly because Kubernetes defaults it to
+          # 1s when omitted — never stated in the manifest, and the cause of a
+          # restart loop in mlflow.yaml (efccde6) and of the AI Gateway being
+          # liveness-killed while healthy. Backstage is a Node backend: a GC
+          # pause or a slow upstream can push a trivial /ready past one second
+          # without the process being unwell. Both stay under their period, so
+          # detection cadence is unchanged.
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 7007
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 7007
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            # More headroom than readiness: failing this restarts the pod, which
+            # is the more destructive answer to "the reply was slow".
+            timeoutSeconds: 10
+      volumes:
+        - name: base-config
+          configMap:
+            name: backstage-base-config
+        - name: prod-config
+          configMap:
+            name: backstage-config
+        - name: rds-ca-bundle
+          configMap:
+            name: rds-ca-bundle
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backstage
+  namespace: backstage
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+    service.beta.kubernetes.io/aws-load-balancer-type: nlb
+spec:
+  type: LoadBalancer
+  selector:
+    app: backstage
+  ports:
+    - port: 80
+      targetPort: 7007
