@@ -1,0 +1,446 @@
+# Local development overrides — safe defaults when credentials are not configured.
+# Merged on top of app-config.yaml at runtime.
+# To enable a feature, set the relevant env vars in local/backstage/.env
+
+app:
+  baseUrl: http://backstage.idp.local
+  # Disable the kubernetes standalone page — it requires an entity context
+  # and crashes with "Entity context is not available" when accessed directly.
+  # Kubernetes info is still available via entity tabs in the catalog.
+  # catalog-graph plugin is fully removed from App.tsx (showed no data locally).
+  extensions:
+    - page:kubernetes:
+        disabled: true
+
+    # The AI entries below are repeated from app-config.yaml on purpose.
+    # Backstage replaces the app.extensions array rather than merging it, so
+    # this list overrides the base one wholesale — and when it held only
+    # page:kubernetes, every AI page and nav item was silently un-gated.
+    #
+    # That is invisible under docker-compose, which loads the generated overlay
+    # local/backstage/app-config.ai.yaml (write_backstage_ai_overlay in
+    # scripts/lib.sh) as a later --config layer. But `yarn start` loads only
+    # app-config.yaml + app-config.local.yaml — the overlay lives outside the
+    # app directory and is never picked up — so the dev server showed AI pages
+    # that dead-end without bootstrap-ai.sh. Hence the duplication here too.
+    #
+    # Note the ID form: `<kind>:<pluginId>/<name>`, i.e.
+    # `page:custom-pages/ai-assistant` — NOT `custom-pages/page:ai-assistant`,
+    # which matches no extension and silently does nothing.
+    - page:custom-pages/ai-assistant:
+        disabled: true
+    - nav-item:custom-pages/ai-assistant:
+        disabled: true
+    - page:custom-pages/ai-search:
+        disabled: true
+    - nav-item:custom-pages/ai-search:
+        disabled: true
+    - page:custom-pages/approvals:
+        disabled: true
+    - nav-item:custom-pages/approvals:
+        disabled: true
+    - page:custom-pages/kagent-platform:
+        disabled: true
+    - nav-item:custom-pages/kagent-platform:
+        disabled: true
+    - page:custom-pages/mlflow-platform:
+        disabled: true
+    - nav-item:custom-pages/mlflow-platform:
+        disabled: true
+    - page:custom-pages/langfuse-platform:
+        disabled: true
+    - nav-item:custom-pages/langfuse-platform:
+        disabled: true
+    # The per-entity Langfuse tab was never in this list, so it rendered on every
+    # component even with the AI stack switched off. Its filter now also matches
+    # AI/ML spec.types without the annotation, which makes disabling it here the
+    # only thing keeping it off a non-AI cluster.
+    - entity-content:custom-pages/langfuse:
+        disabled: true
+
+# Matches the extension flags above. The overlay flips both together once
+# bootstrap-ai.sh has actually deployed the AI layer.
+aiStack:
+  enabled: false
+
+backend:
+  # All traffic (frontend + API) is served through port 3000 (docker port mapping)
+  baseUrl: http://backstage.idp.local
+  listen:
+    port: 3000
+  cors:
+    origin: http://backstage.idp.local
+  database:
+    connection:
+      ssl: false   # local Postgres container has no SSL; override the production default
+  auth:
+    # Permission policy is enforced: guests get read-only access (catalog browse,
+    # TechDocs, template view) but cannot run scaffolder templates or delete entities.
+    # Authenticated GitHub users get full access.
+    # Set to true to temporarily bypass all permission checks (e.g. local debugging).
+    dangerouslyDisableDefaultAuthPolicy: false
+    # externalAccess static token allows the catalog-exporter CronJob (in-cluster) to
+    # query the Backstage catalog API without a user session. Set the same value in the
+    # 'backstage-catalog-exporter-token' Kubernetes Secret.
+    externalAccess:
+      - type: static
+        options:
+          token: "local-catalog-exporter-token"
+          subject: catalog-exporter
+  reading:
+    allow:
+      - host: raw.githubusercontent.com  # used when GITHUB_TOKEN is set (production)
+      - host: localhost:3000              # allows http://localhost:3000/... for locally served static assets
+
+# Auth — enable guest provider so the UI works without GitHub OAuth credentials.
+auth:
+  environment: development
+  # Required by the github provider's sessionDuration below. Unlike AWS
+  # (app-config.aws.yaml sets this from ${AUTH_SESSION_SECRET} in Secrets
+  # Manager) there is no secret store locally, so this falls back to a fixed
+  # development value. It only ever signs cookies on a localhost-only Backstage.
+  # Set AUTH_SESSION_SECRET in local/backstage/.env to override.
+  session:
+    secret: ${AUTH_SESSION_SECRET:-local-development-session-secret-not-a-credential}
+  providers:
+    guest:
+      # NODE_ENV is not set to "development" in the Docker container, so the guest
+      # provider requires this flag to allow sign-in on non-development NODE_ENV.
+      dangerouslyAllowOutsideDevelopment: true
+    github:
+      development:
+        # Same defect as the one fixed on AWS in #390: without a Backstage-minted
+        # session, token refresh is delegated to GitHub, and GitHub OAuth Apps
+        # issue no refresh token unless "Expiration of user authorization tokens"
+        # is enabled — so GET /api/auth/github/refresh 401s and the frontend
+        # re-opens the sign-in popup on the first token-fetching route. Masked
+        # locally only while you sign in as guest; it bites as soon as real
+        # AUTH_GITHUB_CLIENT_ID/SECRET are used, which local/backstage/.env now has.
+        sessionDuration: { days: 7 }
+        signIn:
+          resolvers:
+            # Match GitHub login against entity name (works with private/no email)
+            - resolver: usernameMatchingUserEntityName
+              dangerouslyAllowSignInWithoutUserInCatalog: true
+
+integrations:
+  github:
+    - host: github.com
+      token: ${GITHUB_TOKEN:-local-dev-no-github}
+
+# Templates are registered per-environment (not in the shared app-config.yaml) to
+# avoid double-registering every template once via app-config.yaml and once via
+# app-config.aws.yaml. Locally: the same consolidated all-templates.yaml used on AWS
+# (there via `type: url`, here via `type: file` since local reads the container
+# filesystem directly) — its relative targets resolve against its own location.
+# Adding a template = one line in backstage/catalog/all-templates.yaml.
+#
+# deploy-to-kind is intentionally NOT in all-templates.yaml (that file is shared
+# with AWS, and "deploy to a local Kind cluster" makes no sense there) — registered
+# here instead, local-only. This is why the catalog holds 64 templates locally and
+# all-templates.yaml lists 63; the gap is by design, not drift.
+#
+# Any template registered this way should carry the `local-only` tag so it is
+# filterable and visibly distinct in the scaffolder list — the `local` tag means
+# only "works locally too" and is on ~35 templates that also ship to AWS.
+#
+# IMPORTANT: Backstage's config loader merges objects but *replaces* arrays
+# wholesale when a later config layer redefines the same key — it does not
+# concatenate them. Since this file loads on top of app-config.yaml, a
+# `catalog.locations` list here completely replaces (not appends to) the
+# base list, silently dropping every Component/System/User/Group/API location
+# and leaving the catalog empty except for templates. So the full base list
+# is duplicated below alongside the two local-only template entries. Keep
+# this list in sync with app-config.yaml's `catalog.locations` (and see the
+# equivalent note in app-config.aws.yaml, which has the same requirement).
+catalog:
+  locations:
+    # Platform entities: users, groups (system moved to root catalog-info.yaml)
+    - type: file
+      target: /catalog/catalog-info.yaml
+      rules:
+        - allow: [Component, System, User, Group]
+    # Auto-discover team Group entities created by the team-namespace scaffold template
+    - type: file
+      target: /catalog/groups/*.yaml
+      rules:
+        - allow: [Group]
+    # Domain entities — one file per business domain (platform, engineering, mobile, ai-ml, quality)
+    - type: file
+      target: /catalog/domains/*.yaml
+      rules:
+        - allow: [Domain, System]
+    # Mobile platform catalog
+    - type: file
+      target: /catalog/mobile-catalog.yaml
+      rules:
+        - allow: [Component]
+    # QA team, qa-engineer user, QA platform component, and QA Resource entities
+    - type: file
+      target: /catalog/qa-catalog.yaml
+      rules:
+        - allow: [User, Group, Component, Resource]
+    # System entity at repo root (uses dir:. for techdocs → mkdocs.yml + docs/ at /)
+    - type: file
+      target: /catalog-info.yaml
+      rules:
+        - allow: [System]
+    # API definitions
+    - type: file
+      target: /catalog/apis/hello-service-api.yaml
+      rules:
+        - allow: [API]
+    # Registered services (co-located catalog-info uses dir:. for techdocs)
+    - type: file
+      target: /services/hello-service/catalog-info.yaml
+      rules:
+        - allow: [Component]
+    - type: file
+      target: /catalog/services/idp-assistant/catalog-info.yaml
+      rules:
+        - allow: [Component]
+    - type: file
+      target: /catalog/services/contract-mcp-server/catalog-info.yaml
+      rules:
+        - allow: [Component]
+    # ── AI / ML / MCP Platform ───────────────────────────────────────────────
+    - type: file
+      target: /catalog/resources/ai-platform.yaml
+      rules:
+        - allow: [Resource, Component]
+    - type: file
+      target: /catalog/resources/argo-workflows.yaml
+      rules:
+        - allow: [Resource]
+    - type: file
+      target: /services/idp-mcp-server/catalog-info.yaml
+      rules:
+        - allow: [Component]
+    - type: file
+      target: /services/idp-mcp-server/api.yaml
+      rules:
+        - allow: [API]
+    # ── QA MCP Server ────────────────────────────────────────────────────────
+    - type: file
+      target: /services/qa-mcp-server/catalog-info.yaml
+      rules:
+        - allow: [Component]
+    # ── LLM Eval suite ───────────────────────────────────────────────────────
+    - type: file
+      target: /test-suites/test-deepeval/catalog-info.yaml
+      rules:
+        - allow: [Component]
+    # ── Scaffolded ML experiments (written at scaffold-time by idp:run-training-job) ──
+    - type: file
+      target: /catalog/ml-experiments/*/catalog-info.yaml
+      rules:
+        - allow: [Component]
+    # ── Local-only template registrations (see note above) ─────────────────
+    - type: file
+      target: /catalog/all-templates.yaml
+      rules:
+        - allow: [Template, Location]
+    - type: file
+      target: /catalog/templates/deploy-to-kind/template.yaml
+      rules:
+        - allow: [Template]
+
+# Browser-facing "open in new tab" links for the custom ArgoCD/Grafana/KAgent
+# pages — distinct from the `proxy:` targets below, which are server-side and
+# already differ per environment. These are read by the frontend via
+# configApi.getOptionalString('externalLinks.<name>'); see app-config.aws.yaml
+# for the AWS equivalents (populated by scripts/bootstrap.sh at deploy time).
+externalLinks:
+  # owner/repo where agent-event-router files incident issues. The Incidents
+  # page and entity tab read from here; it must match INCIDENT_REPO on the
+  # router, or the UI shows an empty list while incidents are being filed.
+  incidentRepo: moatazeldebsy/backstage-platform-template
+  argocd: http://argocd.idp.local
+  grafana: http://grafana.idp.local
+  kagent: http://kagent.idp.local
+  mlflow: http://mlflow.idp.local
+  langfuse: http://langfuse.idp.local
+
+# Override the OpenCost proxy target — in-cluster DNS is not reachable from Docker;
+# use the ingress hostname that is mapped to host-gateway in docker-compose extra_hosts.
+proxy:
+  # `skipInvalidProxies: true` used to sit here as a temporary diagnostic, for a
+  # bad endpoint that crashed backend startup outright (catalog and scaffolder
+  # never finished initializing). That endpoint is long fixed — every target in
+  # this file and in app-config.aws.yaml now parses as an absolute http(s) URL,
+  # including the ${VAR:-default} ones — so the flag was only masking future
+  # mistakes, and masking them on local while AWS had no equivalent guard. A
+  # malformed target should fail loudly in dev, where it is cheap to find.
+  endpoints:
+    /opencost:
+      target: http://opencost.idp.local
+      allowedMethods: ['GET']
+      changeOrigin: true
+    /prometheus:
+      target: http://prometheus.idp.local
+      allowedMethods: ['GET']
+      changeOrigin: true
+    /grafana/api:
+      target: http://grafana.idp.local
+      allowedMethods: ['GET']
+      changeOrigin: true
+      headers:
+        Authorization: Bearer ${GRAFANA_TOKEN}
+    /kagent:
+      target: http://kagent.idp.local
+      allowedMethods: ['GET', 'POST', 'HEAD']
+      changeOrigin: true
+      pathRewrite:
+        '^/api/proxy/kagent': ''
+      # A2A agent turns can take 60–180s (cold start + chained MCP tool calls).
+      # Node.js http-proxy-middleware default is ~60s; raise to match ingress.
+      timeout: 300000
+    # MLflow REST API behind the MLflow page (page:custom-pages/mlflow-platform).
+    # POST is required, not optional: experiments/search and runs/search are both
+    # POST in the MLflow 2.x API, and the proxy rejects any method not listed.
+    /mlflow:
+      target: http://mlflow.idp.local
+      allowedMethods: ['GET', 'POST']
+      changeOrigin: true
+      pathRewrite:
+        '^/api/proxy/mlflow': ''
+    # Langfuse public API behind the AI Observability page
+    # (page:custom-pages/langfuse-platform). Only reachable once
+    # `bootstrap-ai.sh --langfuse` has deployed it — the page falls back to demo
+    # data rather than erroring when it has not.
+    #
+    # Langfuse authenticates its public API with HTTP Basic over the project key
+    # pair minted into the langfuse-init Secret at bootstrap. The default keeps
+    # Backstage startup working when Langfuse was never deployed; requests then
+    # fail with 401 and the page shows its error banner, which is the honest
+    # outcome. Export the real value with:
+    #   kubectl get secret langfuse-init -n ml-platform \
+    #     -o jsonpath='{.data.LANGFUSE_INIT_PROJECT_PUBLIC_KEY}' | base64 -d
+    /langfuse:
+      target: http://langfuse.idp.local
+      allowedMethods: ['GET']
+      changeOrigin: true
+      headers:
+        Authorization: Basic ${LANGFUSE_BASIC_AUTH:-bm90LWNvbmZpZ3VyZWQ=}
+      pathRewrite:
+        '^/api/proxy/langfuse': ''
+    /contract-mcp:
+      target: http://contract-mcp-server.idp.local
+      allowedMethods: ['GET', 'POST']
+      changeOrigin: true
+    # ADP Phase 4 HiTL approval gate (docs/agentic-platform.md) — only reachable
+    # once bootstrap-ai.sh --adp has deployed approval-service; otherwise the
+    # Approvals page shows a connection error, same as other opt-in proxies here.
+    /approval-service:
+      target: http://approval-service.idp.local
+      allowedMethods: ['GET', 'POST']
+      changeOrigin: true
+      pathRewrite:
+        '^/api/proxy/approval-service': ''
+    # External SaaS — same endpoints in local and AWS. Empty token = 401 from upstream,
+    # which the Security entity tab renders gracefully as "Unable to load…".
+    /sonarcloud:
+      target: https://sonarcloud.io
+      allowedMethods: ['GET']
+      changeOrigin: true
+      headers:
+        Authorization: Bearer ${SONAR_TOKEN}
+    /snyk:
+      target: https://api.snyk.io
+      allowedMethods: ['GET']
+      changeOrigin: true
+      headers:
+        Authorization: token ${SNYK_TOKEN}
+    # LambdaTest — device farm (mobile-api) and browser grid (api) are separate
+    # hosts, so they need separate endpoints rather than one with a pathRewrite.
+    # The default is a deliberately invalid credential: unset, LambdaTest replies
+    # 401 and the entity tab falls back to demo data, matching /langfuse above.
+    /lambdatest:
+      target: https://api.lambdatest.com
+      allowedMethods: ['GET']
+      changeOrigin: true
+      headers:
+        Authorization: Basic ${LT_BASIC_AUTH:-bm90LWNvbmZpZ3VyZWQ=}
+    /lambdatest-mobile:
+      target: https://mobile-api.lambdatest.com
+      allowedMethods: ['GET']
+      changeOrigin: true
+      headers:
+        Authorization: Basic ${LT_BASIC_AUTH:-bm90LWNvbmZpZ3VyZWQ=}
+    /datadog:
+      target: https://api.datadoghq.eu
+      allowedMethods: ['GET']
+      changeOrigin: true
+      headers:
+        DD-API-KEY: ${DD_API_KEY}
+        DD-APPLICATION-KEY: ${DD_APP_KEY}
+    # Incident records are GitHub issues (see services/agent-event-router). A
+    # separate endpoint from /github-code-scanning even though both target
+    # api.github.com: reusing that one under a misleading name would make the
+    # allowedMethods and header set for two unrelated features impossible to
+    # reason about separately.
+    /github-issues:
+      target: https://api.github.com
+      allowedMethods: ['GET']
+      changeOrigin: true
+      headers:
+        Authorization: Bearer ${GITHUB_TOKEN}
+        Accept: application/vnd.github+json
+    /github-code-scanning:
+      target: https://api.github.com
+      allowedMethods: ['GET']
+      changeOrigin: true
+      headers:
+        Authorization: Bearer ${GITHUB_TOKEN}
+        Accept: application/vnd.github+json
+    /pagerduty:
+      target: https://api.pagerduty.com
+      allowedMethods: ['GET', 'POST']
+      changeOrigin: true
+      headers:
+        Authorization: Token token=${PAGERDUTY_TOKEN}
+        Accept: application/vnd.pagerduty+json;version=2
+    /jira:
+      # Default is an RFC 2606 .invalid host on purpose: when JIRA_URL is unset the
+      # proxy must not resolve. A real-looking placeholder domain would send portal
+      # requests to a third party nobody here controls.
+      target: ${JIRA_URL:-https://jira.invalid}
+      allowedMethods: ['GET']
+      changeOrigin: true
+      headers:
+        Authorization: Basic ${JIRA_TOKEN}
+        Accept: application/json
+    /argocd:
+      target: http://argocd.idp.local
+      allowedMethods: ['GET', 'POST', 'DELETE', 'PATCH']
+      changeOrigin: true
+      headers:
+        Authorization: Bearer ${ARGOCD_AUTH_TOKEN}
+        Content-Type: application/json
+      pathRewrite:
+        '^/api/proxy/argocd': ''
+    /github-copilot:
+      target: https://api.github.com
+      allowedMethods: ['GET']
+      changeOrigin: true
+      headers:
+        Authorization: Bearer ${GITHUB_TOKEN}
+        Accept: application/vnd.github+json
+        X-GitHub-Api-Version: "2022-11-28"
+
+# Serve tech radar directly from the bind-mounted catalog volume via file:// URI.
+# Using file:// avoids the Brotli compression that the static HTTP server applies,
+# which causes the tech-radar UrlReader to fail with "Failed to parse JSON".
+# The catalog directory is mounted at /catalog inside the container.
+techRadar:
+  url: http://localhost:3000/tech-radar.json
+
+permission:
+  enabled: true
+
+techdocs:
+  # Builder/generator already match the base config (local). Only the publisher
+  # differs from prod: store generated docs on the container filesystem
+  # instead of S3 so local doesn't need AWS credentials.
+  publisher:
+    type: 'local'

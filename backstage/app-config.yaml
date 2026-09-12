@@ -1,0 +1,317 @@
+app:
+  title: IDP Developer Portal
+  # baseUrl is env-specific — set in app-config.local.yaml or app-config.aws.yaml
+
+  # Auto-discover all frontend plugins listed in packages/app/package.json
+  packages: all
+
+  extensions:
+    # The custom platform-home page extension (packages/app/src/extensions.tsx)
+    # owns path: / — do NOT also point page:catalog at / here, the two
+    # conflict and whichever wins leaves the other's nav item dead-ending on
+    # the same page. Catalog keeps its own default path (/catalog).
+
+    # AI feature flags — default OFF. `bootstrap-local.sh` on its own installs
+    # no AI stack, so these pages and their sidebar nav items would otherwise
+    # dead-end. `bootstrap-ai.sh` re-enables them by writing the generated
+    # overlay local/backstage/app-config.ai.yaml (and `--destroy` reverts it).
+    #
+    # ID format is `<kind>:<pluginId>/<name>` — see resolveExtensionId() in
+    # @backstage/frontend-plugin-api. These were previously written the other
+    # way round (`custom-pages/page:ai-assistant`), which matches no extension,
+    # so the flags silently did nothing whichever value they were set to.
+    #
+    # NOTE: Backstage does not deep-merge arrays — a later config layer replaces
+    # this list wholesale. The overlay must therefore repeat every entry below,
+    # and anything non-AI added here has to be added there too.
+    - page:custom-pages/ai-assistant:
+        disabled: true
+    - nav-item:custom-pages/ai-assistant:
+        disabled: true
+    - page:custom-pages/ai-search:
+        disabled: true
+    - nav-item:custom-pages/ai-search:
+        disabled: true
+    - page:custom-pages/approvals:
+        disabled: true
+    - nav-item:custom-pages/approvals:
+        disabled: true
+    # The KAgent page queries the KAgent controller API directly, so without
+    # bootstrap-ai.sh it renders a connection error rather than anything useful.
+    - page:custom-pages/kagent-platform:
+        disabled: true
+    - nav-item:custom-pages/kagent-platform:
+        disabled: true
+    # MLflow only exists after bootstrap-ai.sh deploys it into ml-platform.
+    - page:custom-pages/mlflow-platform:
+        disabled: true
+    - nav-item:custom-pages/mlflow-platform:
+        disabled: true
+    - page:custom-pages/langfuse-platform:
+        disabled: true
+    - nav-item:custom-pages/langfuse-platform:
+        disabled: true
+
+# Whether the AI/ML layer is deployed. Drives the hardcoded AI links on the
+# custom Home / Support / Learning-Center pages, which app.extensions cannot
+# reach. Kept in step with the flags above by the same two scripts.
+aiStack:
+  enabled: false
+
+organization:
+  name: My Organization
+
+backend:
+  # baseUrl and listen.port are env-specific — set in app-config.local.yaml or app-config.aws.yaml
+  reading:
+    allow:
+      - host: raw.githubusercontent.com
+  csp:
+    connect-src: ["'self'", 'http:', 'https:']
+    upgrade-insecure-requests: false
+  cors:
+    # origin is env-specific — set in app-config.local.yaml or app-config.aws.yaml
+    methods: [GET, HEAD, PATCH, POST, PUT, DELETE]
+    credentials: true
+  # Required for Backstage v1.29+ token-based auth system.
+  # Without this key, the guest auth backend cannot sign session cookies and
+  # the UI shows "Failed to sign in as a guest using the auth backend" on load.
+  auth:
+    keys:
+      # No default. This key signs Backstage's service-to-service tokens, so a
+      # fallback baked into a public repository is a published signing key —
+      # and because the fallback was silent, AWS ran on it: the env var was
+      # never supplied there at all. Unset now fails startup, which is the
+      # loud failure this needs.
+      - secret: ${BACKSTAGE_AUTH_SECRET}
+  database:
+    client: pg
+    connection:
+      host: ${POSTGRES_HOST}
+      port: ${POSTGRES_PORT}
+      user: ${POSTGRES_USER}
+      password: ${POSTGRES_PASSWORD}
+      ssl:
+        rejectUnauthorized: false
+    knexConfig:
+      pool:
+        min: 3
+        max: 20
+        acquireTimeoutMillis: 60000
+        idleTimeoutMillis: 30000
+
+integrations:
+  github:
+    - host: github.com
+      token: ${GITHUB_TOKEN}
+
+techdocs:
+  builder: 'local'
+  generator:
+    # mkdocs-techdocs-core is installed in the Backstage runtime image
+    # (see backstage/Dockerfile). Building docs in-process avoids spawning a
+    # fresh Docker container per build (several seconds of startup overhead).
+    runIn: 'local'
+  publisher:
+    # type defaults to 'local' (filesystem); overridden to 'awsS3' in app-config.aws.yaml
+    type: 'local'
+
+auth:
+  # environment is env-specific — set in app-config.local.yaml (development) or app-config.aws.yaml (production)
+  providers:
+    guest: {}
+    github:
+      development:
+        # Use a non-empty placeholder so the backend starts even without real OAuth creds.
+        # GitHub login will fail at the OAuth handshake (not at startup) when these are unset.
+        # Set AUTH_GITHUB_CLIENT_ID and AUTH_GITHUB_CLIENT_SECRET in local/backstage/.env
+        # to enable real GitHub sign-in.
+        clientId: ${AUTH_GITHUB_CLIENT_ID:-not-configured}
+        clientSecret: ${AUTH_GITHUB_CLIENT_SECRET:-not-configured}
+        signIn:
+          resolvers:
+            - resolver: usernameMatchingUserEntityName
+              dangerouslyAllowSignInWithoutUserInCatalog: true
+            - resolver: emailMatchingUserEntityProfileEmail
+              dangerouslyAllowSignInWithoutUserInCatalog: true
+
+scaffolder:
+  defaultAuthor:
+    name: IDP Bot
+    email: idp-bot@example.com
+  defaultCommitMessage: "chore: scaffold service via IDP"
+
+catalog:
+  import:
+    entityFilename: catalog-info.yaml
+    pullRequestBranchName: backstage-integration
+  rules:
+    - allow: [Component, System, API, Resource, Location, Template, User, Group, Domain]
+  locations:
+    # Templates are NOT registered here — this file is shared by both local dev and
+    # AWS (merged on top by app-config.local.yaml / app-config.aws.yaml respectively),
+    # and each environment registers backstage/catalog/all-templates.yaml itself
+    # (type: file locally, type: url on AWS) to avoid double-registering every
+    # template once per environment. See app-config.local.yaml / app-config.aws.yaml.
+    # Platform entities: users, groups (system moved to root catalog-info.yaml)
+    - type: file
+      target: /catalog/catalog-info.yaml
+      rules:
+        - allow: [Component, System, User, Group]
+    # Auto-discover team Group entities created by the team-namespace scaffold template
+    - type: file
+      target: /catalog/groups/*.yaml
+      rules:
+        - allow: [Group]
+    # Domain entities — one file per business domain (platform, engineering, mobile, ai-ml, quality)
+    - type: file
+      target: /catalog/domains/*.yaml
+      rules:
+        - allow: [Domain, System]
+    # Mobile platform catalog
+    - type: file
+      target: /catalog/mobile-catalog.yaml
+      rules:
+        - allow: [Component]
+    # QA team, qa-engineer user, QA platform component, and QA Resource entities
+    - type: file
+      target: /catalog/qa-catalog.yaml
+      rules:
+        - allow: [User, Group, Component, Resource]
+    # System entity at repo root (uses dir:. for techdocs → mkdocs.yml + docs/ at /)
+    - type: file
+      target: /catalog-info.yaml
+      rules:
+        - allow: [System]
+    # API definitions
+    - type: file
+      target: /catalog/apis/hello-service-api.yaml
+      rules:
+        - allow: [API]
+    # Registered services (co-located catalog-info uses dir:. for techdocs)
+    - type: file
+      target: /services/hello-service/catalog-info.yaml
+      rules:
+        - allow: [Component]
+    - type: file
+      target: /catalog/services/idp-assistant/catalog-info.yaml
+      rules:
+        - allow: [Component]
+    - type: file
+      target: /catalog/services/contract-mcp-server/catalog-info.yaml
+      rules:
+        - allow: [Component]
+    # ── AI / ML / MCP Platform ───────────────────────────────────────────────
+    - type: file
+      target: /catalog/resources/ai-platform.yaml
+      rules:
+        - allow: [Resource, Component]
+    - type: file
+      target: /catalog/resources/argo-workflows.yaml
+      rules:
+        - allow: [Resource]
+    - type: file
+      target: /services/idp-mcp-server/catalog-info.yaml
+      rules:
+        - allow: [Component]
+    - type: file
+      target: /services/idp-mcp-server/api.yaml
+      rules:
+        - allow: [API]
+    # ── QA MCP Server ────────────────────────────────────────────────────────
+    - type: file
+      target: /services/qa-mcp-server/catalog-info.yaml
+      rules:
+        - allow: [Component]
+    # ── LLM Eval suite ───────────────────────────────────────────────────────
+    - type: file
+      target: /test-suites/test-deepeval/catalog-info.yaml
+      rules:
+        - allow: [Component]
+    # ── Scaffolded ML experiments (written at scaffold-time by idp:run-training-job) ──
+    - type: file
+      target: /catalog/ml-experiments/*/catalog-info.yaml
+      rules:
+        - allow: [Component]
+
+  # GitHub org auto-discovery — finds repos tagged with the `idp` or `idp-app`
+  # topic that contain a catalog-info.yaml. Scaffolded services are tagged
+  # `idp-app` automatically by the scaffolder templates (publish:github
+  # `topics:`), so both must be listed here — the DORA exporter only reports
+  # repos the catalog knows, and dropping `idp-app` blanks every DORA panel.
+  # Add either topic to a pre-existing repo you want imported. Limiting
+  # discovery by topic avoids scanning every fork/archived/tooling repo in the
+  # org every 15 minutes (GitHub API rate-limit pressure).
+  # Requires GITHUB_TOKEN with read:org + repo scopes in local/.env.
+  providers:
+    github:
+      idpOrg:
+        organization: moatazeldebsy
+        catalogPath: /catalog-info.yaml
+        filters:
+          branch: main
+          topic:
+            include: [idp, idp-app]
+        schedule:
+          frequency: { minutes: 15 }
+          timeout: { minutes: 3 }
+        # Auto-delete catalog entities whose source repo no longer carries the
+        # idp topic (e.g. after decommissioning removes the topic). Without this,
+        # stale entities persist as orphans and their TechDocs reappear on fresh installs.
+        orphanStrategy: delete
+
+kubernetes:
+  # Without this the plugin only fetches core workload types, so a service
+  # deployed as an Argo Rollout (the chart's canary path — hello-service uses it)
+  # shows a Service and Pods but no workload on the Kubernetes tab.
+  customResources:
+    - group: 'argoproj.io'
+      apiVersion: 'v1alpha1'
+      plural: 'rollouts'
+  serviceLocatorMethod:
+    type: 'multiTenant'
+  clusterLocatorMethods:
+    - type: 'config'
+      clusters:
+        - url: ${K8S_CLUSTER_URL}
+          name: idp-mvp
+          authProvider: 'serviceAccount'
+          skipTLSVerify: true
+          # Set to true to skip the metrics-server hop (faster page loads, but
+          # CPU/memory columns on the K8s tab will show "unknown").
+          skipMetricsLookup: false
+          serviceAccountToken: ${K8S_SERVICE_ACCOUNT_TOKEN}
+
+techRadar:
+  url: https://raw.githubusercontent.com/moatazeldebsy/backstage-platform-template/main/backstage/catalog/tech-radar.json
+
+# Tech Insights — developer scorecard fact collection.
+#
+# The 11-check Bronze/Silver/Gold scorecard is rendered by a custom entity-page
+# tab ("Scorecard") wired in backstage/app/packages/app/src/extensions.tsx.
+# That tab computes checks client-side from each entity's annotations.
+#
+# This config registers the fact retrievers themselves so the same facts are
+# also written to the Tech Insights backend DB, where the exporter
+# (observability/tech-insights-exporter) pushes them to Pushgateway/CloudWatch.
+techInsights:
+  # Cadences are staggered so all three retrievers don't write to the DB at the
+  # same minute — spreading the load across the 30-minute window.
+  factRetrievers:
+    idp-entity-facts:
+      cadence: '*/30 * * * *'
+    entityMetadataFactRetriever:
+      cadence: '5-59/30 * * * *'
+    entityOwnershipFactRetriever:
+      cadence: '10-59/30 * * * *'
+
+ragSearch:
+  voyageApiKey: ${VOYAGE_API_KEY}
+  indexIntervalMinutes: 30
+  externalSources: []
+
+# Proxy endpoints are env-specific:
+#   local → app-config.local.yaml  (*.idp.local ingress hostnames)
+#   AWS   → app-config.aws.yaml    (*.svc.cluster.local DNS)
+
+
